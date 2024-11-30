@@ -3,17 +3,15 @@ import logging
 from typing import List, Dict, Optional
 
 import uvicorn
-import requests
 import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from langchain.chat_models import ChatOpenAI
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.vectorstores import Chroma
-from langchain.document_loaders import DataFrameLoader
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import Chroma
+from langchain_community.document_loaders import DataFrameLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.memory import ConversationBufferMemory
 from langchain.agents import initialize_agent, AgentType
@@ -23,6 +21,13 @@ from langchain.schema import Document
 from rank_bm25 import BM25Okapi
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+
+# Consts
+EMBENDING_MODEL_NAME = "intfloat/multilingual-e5-large"  # Показала себя с хорошей стороны при работе с Русским языком
+EMBENDING_FUNCTION = HuggingFaceEmbeddings(
+    model_name=EMBENDING_MODEL_NAME,
+    model_kwargs={"device": "cpu"}  # Используем CPU, но можно также использовать GPU
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -35,6 +40,17 @@ load_dotenv()
 YAZZH_GEO_API_BASE = "https://geo.hack-it.yazzh.ru/api/v2"
 YAZZH_MAIN_API_BASE = "https://hack-it.yazzh.ru/api/v1"
 
+# _______________________
+
+
+class MissingEnvironmentVariableError(Exception):
+    def __init__(self, variable_name):
+        self.variable_name = variable_name
+        self.message = f"Переменная окружения {self.variable_name} не установлена!"
+        super().__init__(self.message)
+
+
+# _______________________
 
 class QueryRequest(BaseModel):
     query: str = Field(..., description="User query")
@@ -54,7 +70,7 @@ class DataProcessor:
         self.questions_df = None
         self.load_datasets()
         
-    def load_datasets(self):
+    def load_datasets(self):  # Todo: Ref [Magic]
         try:
             # Load contacts DataFrame
             contacts_path = os.path.join(self.data_dir, "contacts.xlsx")
@@ -95,29 +111,31 @@ class DataProcessor:
 class MultiModalRetriever:
     def __init__(self, data_processor: DataProcessor):
         self.data_processor = data_processor
+        self.data_dir = self.data_processor.data_dir
+        
         self.vectorstore = self._create_vectorstore()
         self.bm25_contacts = self.__create_bm25_index(
-            self.data_processor.contacts_df['description'].tolist()
+            self.data_processor.contacts_df['description'].tolist()  # Todo: Ref [Magic]
         )
         self.tfidf_vectorizer = TfidfVectorizer()
         self.tfidf_matrix = self.tfidf_vectorizer.fit_transform(
-            self.data_processor.contacts_df['description'].tolist()
+            self.data_processor.contacts_df['description'].tolist()  # Todo: Ref [Magic]
         )
 
-    def _create_vectorstore(self):
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+    def _create_vectorstore(self):  # Only contacts using
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)  # Todo: Ref [Magic]
         
         contacts_docs = [
-            Document(page_content=desc, metadata={'source': 'contacts'}) 
-            for desc in self.data_processor.contacts_df['description'].tolist()
+            Document(page_content=desc, metadata={'source': 'contacts'})  # Todo: Ref [Magic]
+            for desc in self.data_processor.contacts_df['description'].tolist()  # TODO: Ref [Magic]
         ]
         
         split_docs = text_splitter.split_documents(contacts_docs)
         
         return Chroma.from_documents(
             documents=split_docs, 
-            embedding=OpenAIEmbeddings(),
-            persist_directory="C:\\Users\\Дом\\Documents\\1GithubProjects\\sber_ai_hack\\data\\contacts"
+            embedding=EMBENDING_FUNCTION,
+            persist_directory=os.path.join(self.data_dir, "contacts")
         )
 
     def __create_bm25_index(self, documents):
@@ -137,7 +155,7 @@ class MultiModalRetriever:
         
         combined_indices = list(set(bm25_top_indices) | set(tfidf_top_indices))
         combined_results = [
-            self.data_processor.contacts_df.iloc[idx]['description'] 
+            self.data_processor.contacts_df.iloc[idx]['description']  # TODO: Ref [Magic]
             for idx in combined_indices
         ]
         
@@ -149,10 +167,9 @@ class MultiModalRetriever:
 
 
 class CityAssistant:
-    def __init__(self):
-        self.data_processor = DataProcessor("C:\\Users\\Дом\\Documents\\1GithubProjects\\sber_ai_hack\\data")
+    def __init__(self, data_path: str) -> None:
+        self.data_processor = DataProcessor(data_path)
         self.retriever = MultiModalRetriever(self.data_processor)
-        self.llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.5)
 
     def process_query(self, query: str) -> QueryResponse:
         try:
@@ -162,26 +179,21 @@ class CityAssistant:
             # Prepare context for LLM
             context = "\n".join(search_results)
 
-            # Generate response using LLM
-            response = self.llm.predict(
-                f"Context: {context}\n\nQuery: {query}\n\nProvide a comprehensive and helpful response."
-            )
-
-            # Calculate confidence (simplified)
-            confidence = len(search_results) / 5.0
+            # Calculate confidence
+            confidence = len(search_results) / 5.0  # TODO: Ref [Simplified]
 
             return QueryResponse(
-                response=response,
+                response=f"Контекст: {context}\n\nЗапрос: {query}\n\nПредоставь исчерпывающий и полезный ответ.",
                 sources=[{"text": result} for result in search_results],
                 confidence=confidence
             )
-
         except Exception as e:
             logger.error(f"Query processing error: {e}")
             return QueryResponse(
                 response="Извините, произошла ошибка при обработке запроса.",
                 confidence=0.0
             )
+
 
 # FastAPI Application
 app = FastAPI(
@@ -190,7 +202,12 @@ app = FastAPI(
     version="1.0.0"
 )
 
-assistant = CityAssistant()
+data_dir_path_env_var = "DATA_DIR_PATH"
+data_dir_path = os.getenv(data_dir_path_env_var)
+if not data_dir_path:
+    raise MissingEnvironmentVariableError(data_dir_path_env_var)
+
+assistant = CityAssistant(data_dir_path)
 
 
 @app.post("/query", response_model=QueryResponse)
@@ -214,7 +231,7 @@ async def health_check():
     return {"status": "healthy"}
 
 
-def app():
+def start_app():
     logging.basicConfig(level=logging.DEBUG)
     uvicorn.run(
         "main:app", 
@@ -224,5 +241,6 @@ def app():
         log_level="debug"
     )
 
+
 if __name__ == "__main__":
-    app()
+    start_app()
