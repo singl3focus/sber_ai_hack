@@ -1,0 +1,32 @@
+# Core dependencies
+fastapi
+uvicorn
+pydantic
+python-multipart
+httpx
+
+# Data processing
+numpy
+pandas
+openpyxl
+scikit-learn
+
+# AI and ML
+langchain
+openai
+rank-bm25
+sentence-transformers
+chromadb
+tiktoken
+
+# Utilities
+python-dotenv
+requests
+
+# Testing (optional)
+pytest
+allure-pytest
+
+# Test dependencies
+pytest
+httpx

@@ -1,0 +1,10 @@
+# Intrpreter files
+/GameEnv
+.venv/
+
+# Env files
+*.env
+
+# Cashe
+tests/__pycache__/
+chroma_db/
