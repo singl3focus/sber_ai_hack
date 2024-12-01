@@ -21,6 +21,15 @@ from langchain.schema import Document
 from rank_bm25 import BM25Okapi
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, classification_report
+import nltk
+from nltk.corpus import stopwords
+
+
+nltk.download('stopwords')
+russian_stopwords = stopwords.words('russian')
 
 # Consts
 EMBENDING_MODEL_NAME = "intfloat/multilingual-e5-large"  # Показала себя с хорошей стороны при работе с Русским языком
@@ -59,8 +68,8 @@ class QueryRequest(BaseModel):
 
 class QueryResponse(BaseModel):
     response: str
-    sources: List[Dict[str, str]] = Field(default_factory=list)
-    confidence: float = Field(default=0.0)
+    # sources: Optional[List[Dict[str, str]]] = Field(None, description="Optional context for query")
+    # confidence: Optional[float] = Field(None, description="Optional confidence of query")
 
 
 class DataProcessor:
@@ -95,7 +104,7 @@ class DataProcessor:
             # Fill NaN values
             self.contacts_df['description'] = self.contacts_df['description'].fillna('')
             self.questions_df['question'] = self.questions_df['question'].fillna('')
-            
+
             logger.info(f"Contacts DataFrame columns: {list(self.contacts_df.columns)}")
             logger.info(f"Questions DataFrame columns: {list(self.questions_df.columns)}")
             logger.info("Datasets loaded and preprocessed successfully")
@@ -135,7 +144,7 @@ class MultiModalRetriever:
         return Chroma.from_documents(
             documents=split_docs, 
             embedding=EMBENDING_FUNCTION,
-            persist_directory=os.path.join(self.data_dir, "contacts")
+            persist_directory=os.path.join(self.data_dir, "db")
         )
 
     def __create_bm25_index(self, documents):
@@ -171,8 +180,42 @@ class CityAssistant:
         self.data_processor = DataProcessor(data_path)
         self.retriever = MultiModalRetriever(self.data_processor)
 
+        # Загрузка данных из CSV
+        data = pd.read_csv(os.path.join(data_path, 'question_classification.csv'))
+
+        # Разделяем данные на признаки (X) и метки (y)
+        X = data['question']
+        y = data['label']
+
+        # Разделяем данные на обучающую и тестовую выборки
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+        # Преобразование текста в числовые признаки с помощью TF-IDF
+        self.vectorizer = TfidfVectorizer(stop_words=russian_stopwords)
+        X_train_tfidf = self.vectorizer.fit_transform(X_train)
+        X_test_tfidf = self.vectorizer.transform(X_test)
+
+        # Обучение модели
+        self.model = LogisticRegression()
+        self.model.fit(X_train_tfidf, y_train)
+
+        # Предсказание на тестовых данных
+        y_pred = self.model.predict(X_test_tfidf)
+
+        # Оценка модели
+        logger.info(f'Accuracy: {accuracy_score(y_test, y_pred)}')
+        logger.info(classification_report(y_test, y_pred))
+
     def process_query(self, query: str) -> QueryResponse:
         try:
+            new_question_tfidf = self.vectorizer.transform([query])
+            prediction = self.model.predict(new_question_tfidf)
+            logger.info(f'Предсказанный ответ: {prediction[0]}')
+            if prediction[0] == "template":
+                return QueryResponse(
+                    response=f"Запрос: {query}\n\nПредоставь исчерпывающий и полезный ответ.",
+                )
+
             # Perform hybrid search
             search_results = self.retriever.hybrid_search(query)
 
@@ -184,14 +227,14 @@ class CityAssistant:
 
             return QueryResponse(
                 response=f"Контекст: {context}\n\nЗапрос: {query}\n\nПредоставь исчерпывающий и полезный ответ.",
-                sources=[{"text": result} for result in search_results],
-                confidence=confidence
+                # sources=[{"text": result} for result in search_results],
+                # confidence=confidence
             )
         except Exception as e:
             logger.error(f"Query processing error: {e}")
             return QueryResponse(
                 response="Извините, произошла ошибка при обработке запроса.",
-                confidence=0.0
+                # confidence=0.0
             )
 
 
